@@ -14,6 +14,14 @@ from pathlib import Path
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
 
+# Initialize DB if available
+try:
+    from .db import init_db, get_session
+    from .models import Activity, Signup, User
+    db_available = True
+except Exception:
+    db_available = False
+
 # Mount the static files directory
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
@@ -85,6 +93,23 @@ def root():
 
 @app.get("/activities")
 def get_activities():
+    if db_available:
+        session = get_session()
+        rows = session.query(Activity).all()
+        result = {}
+        for row in rows:
+            result[row.name] = {
+                "description": row.description,
+                "schedule": row.schedule,
+                "max_participants": row.max_participants,
+                "participants": [],
+            }
+        # attach participants
+        signups = session.query(Signup).all()
+        for s in signups:
+            if s.activity_name in result:
+                result[s.activity_name]["participants"].append(s.user_email)
+        return result
     return activities
 
 
@@ -106,8 +131,23 @@ def signup_for_activity(activity_name: str, email: str):
         )
 
     # Add student
-    activity["participants"].append(email)
-    return {"message": f"Signed up {email} for {activity_name}"}
+    if db_available:
+        session = get_session()
+        # check activity exists
+        act = session.get(Activity, activity_name)
+        if act is None:
+            raise HTTPException(status_code=404, detail="Activity not found")
+        # check existing signup
+        existing = session.query(Signup).filter_by(user_email=email, activity_name=activity_name).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Student is already signed up")
+        signup = Signup(user_email=email, activity_name=activity_name)
+        session.add(signup)
+        session.commit()
+        return {"message": f"Signed up {email} for {activity_name}"}
+    else:
+        activity["participants"].append(email)
+        return {"message": f"Signed up {email} for {activity_name}"}
 
 
 @app.delete("/activities/{activity_name}/unregister")
